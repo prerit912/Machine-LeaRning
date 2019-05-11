@@ -1,0 +1,8 @@
+## Create ClosedOrders
+
+Create table ClosedOrders (invoice_id VARCHAR(10) , line_id VARCHAR(12), store_id INT, time_stamp DATETIME, product_id VARCHAR(10), quantity_sold INT, sales DECIMAL, cost DECIMAL
+);
+
+
+
+Insert into ClosedOrders Values('invoice_1','line_1','store_1','2016-12-09','p_1','20','300','')

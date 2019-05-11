@@ -1,0 +1,1034 @@
+---
+title: "Market Basket Analysis"
+author: "Prerit Anwekar"
+date: "March 27, 2016"
+output: pdf_document
+---
+Install Libraries
+```{r}
+install.packages("dplyr") #For manupalating datasets efficiently.
+install.packages("gtools") #A package for Combinatorial calculations.
+install.packages("plyr")
+install.packages("tidyr")
+install.packages("ggplot2")
+```
+Load Libraries
+```{r}
+library(plyr);library(dplyr);library(tidyr)
+library(gtools)
+library(ggplot2)
+```
+Global Variables
+```{r}
+number_of_candidate_itemset<-c()
+number_of_frequent_itemset<-c()
+
+tracking.statistics.table.fkf1<-c()
+tracking.statistics.table.fkfk<-c()
+
+data.mb<-c()
+nursery.b<-c()
+car.b<-c()
+mushroom.b<-c()
+
+Toy.fqi1<-c()
+Toy.fqi2<-c()
+Toy.fqi3<-c()
+
+Nursery.fqi1<-c()
+Nursery.fqi2<-c()
+Nursery.fqi3<-c()
+
+Car.fqi1<-c()
+Car.fqi2<-c()
+Car.fqi3<-c()
+
+Tictac.fqi1<-c()
+Tictac.fqi2<-c()
+Tictac.fqi3<-c()
+
+rules.conf.table<-data.frame()
+rules.lift.table<-data.frame()
+
+countRules<- 0
+bruteForce<- 0
+
+conf.brute.tables<- data.frame()
+max.cl.tables<-data.frame()
+close.freq.table<-data.frame()
+```
+Binarize Datasets
+```{r}
+binarize<-function(dataset,names){ 
+  drops<-NA
+  colnames(dataset)<- paste("{",names,"}:",sep = "")
+  dataset<-dataset[,!(names(dataset)%in%drops)]
+  xt<-as.data.frame(model.matrix(~ . + 0, data=dataset, contrasts.arg = lapply(dataset, contrasts, contrasts=FALSE)))
+  return(xt)
+}
+```
+Remove Unwanted Columns
+```{r}
+rm.unwanted.col<-function(dataframe,cols){
+  return(dataframe[-match(cols,names(dataframe))])
+}
+```
+Load dataset Interface
+```{r}
+load.datasets<-function(){
+  column.names <- c("TID","Bread","Milk","Diapers","Beer","Eggs","Cola")
+  t1 <- c(1,1,1,0,0,0,0)
+  t2 <- c(2,1,0,1,1,1,0)
+  t3 <- c(3,1,1,1,1,0,1)
+  t4 <- c(4,1,1,1,1,0,0)
+  t5 <- c(5,1,1,1,0,0,1)
+
+  data.mb<<- rbind(t1,t2,t3,t4,t5)
+  data.mb <<- as.data.frame(data.mb)
+  colnames(data.mb)<<-column.names
+  data.mb<<-rm.unwanted.col(data.mb,"TID")
+  
+  nursery.data<- read.table("https://archive.ics.uci.edu/ml/machine-learning-databases/nursery/nursery.data", header = FALSE,sep = ",",fill = TRUE)
+  nursery.b<<-binarize(nursery.data,c( "parents","has_nurs","form","children","housing","finance","social","health"))
+  
+  car.data<- read.table("https://archive.ics.uci.edu/ml/machine-learning-databases/car/car.data",header = FALSE,sep = ",", fill = TRUE)
+  car.b<<-binarize(car.data,c("buying", "maint","doors","persons","lug_boot","safety"))
+  
+  tictac.data<-read.table("https://archive.ics.uci.edu/ml/machine-learning-databases/tic-tac-toe/tic-tac-toe.data",header = FALSE,sep = ",", fill = TRUE)
+  tictac.b<<-binarize(tictac.data,c("top-left-square","top-middle-square","top-right-square","middle-left-square",
+                    "middle-middle-square","middle-right-square","bottom-left-square","bottom-middle-square","bottom-right-square","Class")
+)
+}
+
+load.datasets()
+```
+Do Permutations and return a new dataset of itemsets
+```{r}
+permute.k.itemset<- function(itemset,k){
+  cols<-as.vector(itemset$items)
+  permutations(length(cols),k,cols)
+}
+```
+FK-1 X F1 Method for Candidate Generation
+```{r}
+fkf1.candidate.gen<- function(col.set1,col.set2,k){
+  cart.prod<- expand.grid(col.set1,col.set2)
+  return(helper(cart.prod,k))
+}
+```
+FK-1 X FK-1 Method for Candidate Generation
+```{r}
+fkfk.candidate.gen<-function(col.set1,col.set2,k){
+  if(k == 2){
+    return(fkf1.candidate.gen(col.set1,col.set2,k))
+  }else{
+    df<-data.frame(do.call('rbind', strsplit(as.character(col.set1)," "))) #fixed = TRUE was removed.
+    df<- merge(df, df, by=names(df)[-(k-1)])
+    return(helper(df,k))
+  }
+}
+```
+Helper function for two candidate generation method
+```{r}
+helper<-function(cart.prod,k){
+    cart.prod<-mdply(cart.prod,paste)
+    cart.prod<-cart.prod[,ncol(cart.prod)]
+    table<-c()
+  for(each_value in 1:length(cart.prod)){
+    split.string <- unlist(strsplit(as.character(cart.prod[each_value]),split=" "))
+    len<-length(unique(split.string))
+    if(len == k){
+      table<- rbind(table,paste(sort(split.string),collapse = " "))
+    }
+  }
+  if(!is.null(table)){
+    table<-remove.duplicates(as.data.frame(table))
+  }
+  return(table)  
+}
+
+```
+Removing the duplicates
+```{r}
+remove.duplicates<-function(table){
+   df<-data.frame(do.call('rbind', strsplit(as.character(table$V1)," ",fixed=TRUE)))
+   return(as.matrix(mdply(df[!duplicated(t(apply(df, 1, sort))), ],paste)$V1))
+}
+```
+Splitting Rules
+```{r}
+split <- function(lhs){
+  s.vector <- c(unlist(strsplit(lhs,split = " ")))
+  return(s.vector)
+}
+
+```
+Rules Union Function
+```{r}
+rules.union <- function(lhs,rhs){
+  union <- unique(c(split(lhs),split(rhs)))
+  return(union)
+}
+
+```
+Find Support
+```{r}
+Support <- function(dataset,columns,n){
+  return(support.count(dataset,columns)/n)
+}
+```
+Find Support Count
+```{r}
+support.count<-function(itemset,columns){
+  subset <- select(itemset,match(columns,names(itemset)))
+  for(column in columns){
+    subset <- filter(subset,subset[column] == 1)
+  }
+  return(nrow(subset))
+}
+
+```
+Find Confidence
+```{r}
+Confidence<-function(dataset,X,Y,n){
+  x<-Support(dataset,rules.union(X,Y),n)
+  y<-Support(dataset,X,n)
+  return(x/y)
+}
+
+```
+Find Lift
+```{r}
+lift<-function(dataset,X,Y,n){
+  return(Confidence(dataset,X,Y,n)/Support(dataset,Y,n))
+}
+```
+Frequent Item set Generation
+```{r}
+generate.frequent.itemsets<-function(dataset,columns,minsup,n,k){
+  min.support.count <-  minsup * n
+  items <- columns
+  supports<- c()
+  if(k == 1){ 
+    for(each_column in columns){
+      supports<- c(supports,support.count(dataset,each_column))
+    }
+  }else{
+    items<-c()
+    for(rownum in 1:nrow(columns)){
+      supports<-c(supports,support.count(dataset,unlist(strsplit(as.character(columns[rownum,]),split = " "))))
+      items<-c(items,as.character(paste(columns[rownum,],collapse = " ")))
+    }
+  }
+  supports <- as.numeric(supports)
+  candidate.itemset <- data.frame(items,supports)
+  candidate.itemset <- filter(candidate.itemset,supports >= min.support.count)
+  return(candidate.itemset)
+}
+```
+Check for Empty Dataset
+```{r}
+is.Empty<- function(dataset){
+  flag = FALSE
+  if(is.data.frame(dataset)&& (nrow(dataset) == 0)){
+    flag = TRUE
+  }
+  return(flag)
+}
+```
+Apriori Algorithm
+parameters: a binary dataset, Minimum support and method fk x f1 = "1" and fk-1 x fk-1 = "2"
+```{r}
+apriori.algorithm<-function(dataset,minsup = 0.5,method=1){
+  k = 1
+  number_of_candidate_itemset<<-0
+  number_of_frequent_itemset<<-0
+  dataset<-as.data.frame(dataset)
+  f1 <- generate.frequent.itemsets(dataset,names(dataset),minsup,nrow(dataset),k)
+  pander::pandoc.table(f1,style="grid",caption = paste("Frequent",1,"Item set ", "Number of Frequent Itemset: ",nrow(f1)) )
+  Frequent.itemsets <-  data.frame(Frequent_itemset=as.character())
+  if(nrow(f1) == 0){
+    return()
+  }
+  Frequent.itemsets<- rbind(Frequent.itemsets, cbind(f1, minsup))
+  number_of_frequent_itemset<<-c(number_of_frequent_itemset,nrow(f1))
+  number_of_candidate_itemset<<-c(number_of_candidate_itemset,nrow(dataset))
+  candidate.set<-as.matrix(f1$items)
+  fk<-f1
+    while(!is.Empty(fk)){
+      k = k + 1
+        if(method == 1){
+          candidate.set<-fkf1.candidate.gen(fk$items,f1$items,k) 
+        }else{
+          candidate.set<-fkfk.candidate.gen(fk$items,fk$items,k) 
+        }
+        if(is.null(candidate.set)){ 
+          break
+        }
+        pander::pandoc.table(candidate.set,style="grid",caption = paste("Candidate",k,"Item set ", "Number of Candidate Itemset:",nrow(candidate.set)) )
+        number_of_candidate_itemset<<-c(number_of_candidate_itemset,nrow(candidate.set))
+        
+        fk<- generate.frequent.itemsets(dataset,candidate.set,minsup,nrow(dataset),k) #fk dataset
+        if(!is.Empty(fk)){
+          Frequent.itemsets<- rbind(Frequent.itemsets, cbind(fk, minsup))
+        }
+        pander::pandoc.table(fk,style="grid",caption = paste("Frequent",k,"Item set ", "Number of Frequent Itemset:",nrow(fk)) )
+        number_of_frequent_itemset<<-c(number_of_frequent_itemset,nrow(fk))
+    }
+    return(list(c(nrow(dataset),sum(number_of_candidate_itemset),sum(number_of_frequent_itemset),minsup),Frequent.itemsets))
+  }
+```
+Data set 1: Toy
+```{r}
+Toy.fkf1<- function(){
+  #Execute Apriori Algorithm
+  
+  Toy.ob1<-apriori.algorithm(data.mb,minsup = 0.1,method = 1)[[1]]
+  Toy.ob2<-apriori.algorithm(data.mb,minsup = 0.2,method = 1)[[1]]
+  Toy.ob3<-apriori.algorithm(data.mb,minsup = 0.5,method = 1)[[1]]
+  
+  #Statistics
+  tracking.statistics.table.fkf1 <<- data.frame(Size=as.numeric(),Candidate.items = as.numeric(),Frequent.items = as.numeric())
+  tracking.statistics.table.fkf1 <<- rbind(Toy.ob1,Toy.ob2,Toy.ob3)
+  colnames(tracking.statistics.table.fkf1)<<-c("Size","Candidate Itemset","Frequent Itemset","Support")
+
+}
+```
+Data set 2: Nursery : abnormal Issue with nursery.ob3, check before submission
+```{r}
+Nursery.fkf1<-function(){
+  
+  #Execute Apriori Algorithm
+  nursery.ob1<-apriori.algorithm(nursery.b,minsup = 0.1,method = 1)[[1]]
+  nursery.ob2<-apriori.algorithm(nursery.b,minsup = 0.2,method = 1)[[1]]
+  nursery.ob3<-apriori.algorithm(nursery.b,minsup = 0.5,method = 1)[[1]]
+  
+  #Statistics
+  tracking.statistics.table.fkf1 <<- rbind(tracking.statistics.table.fkf1,nursery.ob1,nursery.ob2,nursery.ob3)
+  colnames(tracking.statistics.table.fkf1)<<-c("Size","Candidate Itemset","Frequent Itemset","Support")
+}
+```
+Data set 3 : Car
+```{r}
+Car.fkf1<-function(){
+  #Execute Apriori Algorithm
+  car.ob1<-apriori.algorithm(car.b,minsup = 0.1,method = 1)[[1]]
+  car.ob2<-apriori.algorithm(car.b,minsup = 0.2,method = 1)[[1]]
+  car.ob3<-apriori.algorithm(car.b,minsup = 0.5,method = 1)[[1]]
+  
+  #Statistics
+  tracking.statistics.table.fkf1 <<- rbind(tracking.statistics.table.fkf1,car.ob1,car.ob2,car.ob3)
+  colnames(tracking.statistics.table.fkf1)<<-c("Size","Candidate Itemset","Frequent Itemset","Support")
+}
+```
+Dataset 4 : Tic-Tac-Toe
+```{r}
+Tictac.fkf1<-function(){
+  #Execute Apriori Algorithm
+  tictac.ob1<-apriori.algorithm(tictac.b,minsup = 0.1,method = 1)[[1]]
+  tictac.ob2<-apriori.algorithm(tictac.b,minsup = 0.2,method = 1)[[1]]
+  tictac.ob3<-apriori.algorithm(tictac.b,minsup = 0.5,method = 1)[[1]]
+  
+  #Statistics
+  tracking.statistics.table.fkf1 <<- rbind(tracking.statistics.table.fkf1,tictac.ob1,tictac.ob2,tictac.ob3)
+  colnames(tracking.statistics.table.fkf1)<<-c("Size","Candidate Itemset","Frequent Itemset","Support")
+}
+
+```
+Apriori Fk-1 x F1
+```{r}
+Toy.fkf1()
+Nursery.fkf1()
+Car.fkf1()
+Tictac.fkf1()
+#Prints the table
+tracking.statistics.table.fkf1
+```
+Data set 1 : Toy
+```{r}
+
+Toy.fkfk<- function(){
+  
+  #Execute Apriori Algorithm
+  Toy.ob1<-apriori.algorithm(data.mb,minsup = 0.1,method = 2)[[1]]
+  Toy.ob2<-apriori.algorithm(data.mb,minsup = 0.2,method = 2)[[1]]
+  Toy.ob3<-apriori.algorithm(data.mb,minsup = 0.5,method = 2)[[1]]
+  
+  #Statistics
+  tracking.statistics.table.fkfk <<- data.frame(Size=as.numeric(),Candidate.items = as.numeric(),Frequent.items = as.numeric())
+  tracking.statistics.table.fkfk <<- rbind(Toy.ob1,Toy.ob2,Toy.ob3)
+  colnames(tracking.statistics.table.fkfk)<<-c("Size","Candidate Itemset","Frequent Itemset","Support")
+}
+
+```
+Data set 2: Nursery
+```{r}
+Nursery.fkfk<-function(){
+  
+  #Execute Apriori Algorithm
+  nursery.ob1<-apriori.algorithm(nursery.b,minsup = 0.1,method = 2)[[1]]
+  nursery.ob2<-apriori.algorithm(nursery.b,minsup = 0.2,method = 2)[[1]]
+  nursery.ob3<-apriori.algorithm(nursery.b,minsup = 0.5,method = 2)[[1]]
+  
+  #Statistics
+  tracking.statistics.table.fkfk <<- rbind(tracking.statistics.table.fkfk,nursery.ob1,nursery.ob2,nursery.ob3)
+  colnames(tracking.statistics.table.fkfk)<<-c("Size","Candidate Itemset","Frequent Itemset","Support")
+ 
+}
+```
+Data set 3: Car
+```{r}
+Car.fkfk<-function(){
+  
+  #Execute Apriori Algorithm
+  car.ob1<-apriori.algorithm(car.b,minsup = 0.1,method = 2)[[1]]
+  car.ob2<-apriori.algorithm(car.b,minsup = 0.2,method = 2)[[1]]
+  car.ob3<-apriori.algorithm(car.b,minsup = 0.5,method = 2)[[1]]
+  
+  #Statistics
+  tracking.statistics.table.fkfk <<- rbind(tracking.statistics.table.fkfk,car.ob1,car.ob2,car.ob3)
+  colnames(tracking.statistics.table.fkfk)<<-c("Size","Candidate Itemset","Frequent Itemset","Support")
+}
+```
+Dataset 4 : Tic-Tac-Toe
+```{r}
+Tictac.fkfk<-function(){
+  #Execute Apriori Algorithm
+  tictac.ob1<-apriori.algorithm(tictac.b,minsup = 0.1,method = 2)[[1]]
+  tictac.ob2<-apriori.algorithm(tictac.b,minsup = 0.2,method = 2)[[1]]
+  tictac.ob3<-apriori.algorithm(tictac.b,minsup = 0.5,method = 2)[[1]]
+  
+  #Statistics
+  tracking.statistics.table.fkfk <<- rbind(tracking.statistics.table.fkfk,tictac.ob1,tictac.ob2,tictac.ob3)
+  colnames(tracking.statistics.table.fkfk)<<-c("Size","Candidate Itemset","Frequent Itemset","Support")
+}
+```
+Apriori Fk-1 x Fk
+```{r}
+Toy.fkfk()
+Nursery.fkfk()
+Car.fkfk()
+Tictac.fkfk()
+
+#Prints the table
+tracking.statistics.table.fkfk
+```
+Make Frequent Itemset Available globally
+```{r}
+SetGlobalVariable.Frequent.itemset<-function(dataset1,dataset2,dataset3,dataset4){
+  
+  Toy.fqi1<<-apriori.algorithm(dataset1,minsup = 0.1,method = 2)[[2]]
+  Toy.fqi2<<-apriori.algorithm(dataset1,minsup = 0.2,method = 2)[[2]]
+  Toy.fqi3<<-apriori.algorithm(dataset1,minsup = 0.5,method = 2)[[2]]
+  
+  Nursery.fqi1<<-apriori.algorithm(dataset2,minsup = 0.1,method = 2)[[2]]
+  Nursery.fqi2<<-apriori.algorithm(dataset2,minsup = 0.2,method = 2)[[2]]
+  Nursery.fqi3<<-apriori.algorithm(dataset2,minsup = 0.5,method = 2)[[2]]
+    
+  Car.fqi1<<-apriori.algorithm(dataset3,minsup = 0.1,method = 2)[[2]]
+  Car.fqi2<<-apriori.algorithm(dataset3,minsup = 0.2,method = 2)[[2]]
+  Car.fqi3<<-apriori.algorithm(dataset3,minsup = 0.5,method = 2)[[2]]
+  
+  Tictac.fqi1<<-apriori.algorithm(dataset4,minsup = 0.1,method = 2)[[2]]
+  Tictac.fqi2<<-apriori.algorithm(dataset4,minsup = 0.2,method = 2)[[2]]
+  Tictac.fqi3<<-apriori.algorithm(dataset4,minsup = 0.5,method = 2)[[2]]
+}
+```
+Create Frequent itemsets globally for further analysis
+```{r}
+SetGlobalVariable.Frequent.itemset(data.mb,nursery.b,car.b,tictac.b)
+```
+Some Plots
+```{r}
+trackfkf1<-as.data.frame(tracking.statistics.table.fkf1)
+trackfkfk<-as.data.frame(tracking.statistics.table.fkfk)
+
+#"Fk - 1 x F1"
+qplot(Size, `Candidate Itemset`,data = trackfkf1, color = Support, size = 2, main = "Size vs Candidate Itemset (Fk-1 x F1)")
+qplot(Size, `Frequent Itemset`, data = trackfkf1, color = Support, size = 2, main = "Size vs Frequent Itemset (Fk-1 x F1)")
+
+#"Fk - 1 x Fk-1"
+qplot(Size, `Candidate Itemset`,data = trackfkfk, color = Support, size = 2, main = "Size vs Candidate Itemset (Fk-1 x Fk-1)")
+qplot(Size, `Frequent Itemset`, data = trackfkfk, color = Support, size = 2, main = "Size vs Frequent Itemset (Fk-1 x Fk-1)")
+
+```
+Maximal Frequent Itemset
+```{r}
+maximal.freq.itemset<- function(frequent.itemsets){
+  x<- as.vector(frequent.itemsets$items)
+  minsup<- unique(frequent.itemsets$minsup)
+  flag = FALSE
+  max.item<-c()
+  for(i in 1:nrow(frequent.itemsets)){
+    s1<- unlist(strsplit(as.character(x[i]),split = " "))
+    for(j in 1:nrow(frequent.itemsets)){
+      s2<- unlist(strsplit(as.character(x[j]), split = " "))
+      if(length(s1) == length(s2)){
+        break
+      }
+      if(all(s1 %in% s2) && length(s2) > length(s1)){  # && !(length(s2)<length(s1)+2)
+        flag = FALSE
+        break
+      }else{
+        flag = TRUE
+      }
+    }
+    if(flag == TRUE){
+      max.item<- c(max.item,paste(sort(s1),collapse = " "))
+    }
+  }
+  return(max.item)
+}
+```
+Closed Frequent Itemset
+```{r}
+closed.frequent.itemset<- function(dataset, minsup){
+  power.set<-findPowerset(names(dataset))
+  lattice<-c()
+  closed.item<-c()
+  for(row in 1:length(power.set)){
+    if(length(power.set[[row]]) == 0){
+      next
+    }
+    lattice<- rbind(lattice,cbind(paste(sort(power.set[[row]]),collapse = " "), as.integer(support.count(dataset,(unlist(power.set[[row]]))))))
+  }
+  lattice<- as.data.frame(lattice)
+  colnames(lattice)<- c("Itemset","Support")
+  x<-lattice$Itemset
+  y<-lattice$Support
+  flag<-FALSE
+  for(i in 1:nrow(lattice)){
+    s1<- unlist(strsplit(as.character(x[i]),split = " "))
+    s1.sup<- as.numeric(as.character(y[i]))
+    for(j in 1:nrow(lattice)){
+      s2<- unlist(strsplit(as.character(x[j]), split = " "))
+      s2.sup <- as.numeric(as.character(y[j]))
+      if(length(s2) == length(s1) + 1){
+        if(all(s1 %in% s2)){
+          if(s2.sup != s1.sup){
+            flag = TRUE
+          }else{
+            flag = FALSE
+            break
+          }
+        }
+      }
+       
+    }
+    if(s1.sup < (nrow(dataset) * minsup)){
+          flag = FALSE
+        }
+    if(flag == TRUE){
+      closed.item<- c(closed.item,paste(sort(s1),collapse = " "))
+    }
+  }
+  return(closed.item)
+}
+```
+Calculate Power set :- Code taken from stackoverflow (http://stackoverflow.com/questions/18715580/algorithm-to-calculate-power-set-all-possible-subsets-of-a-set-in-r)
+```{r}
+findPowerset<- function(set){
+  n <- length(set)
+  keepBool <- sapply(2^(1:n - 1), function(k) 
+    rep(c(FALSE, TRUE), each=k, times=(2^n / (2*k))))
+  lapply(1:2^n, function(j) set[keepBool[j, ]])
+}
+
+```
+Finding Close Item set and Maximal Itemset Interface
+```{r}
+ClosedAndMaximal<-function(){
+  cat(paste("Maximal Frequent Itemset:Support: 0.1"))
+  toy1<-length(maximal.freq.itemset(Toy.fqi1))
+  cat(paste("Maximal Frequent Itemset:Support: 0.2"))
+  toy2<-length(maximal.freq.itemset(Toy.fqi2))
+  cat(paste("Maximal Frequent Itemset:Support: 0.5"))
+  toy3<-length(maximal.freq.itemset(Toy.fqi3))
+  
+  cat(paste("Maximal Frequent Itemset:Support: 0.1"))
+  nursery1<-length(maximal.freq.itemset(Nursery.fqi1))
+  cat(paste("Maximal Frequent Itemset:Support: 0.2"))
+  nursery2<-length(maximal.freq.itemset(Nursery.fqi2))
+  cat(paste("Maximal Frequent Itemset:Support: 0.5"))
+  nursery3<-length(maximal.freq.itemset(Nursery.fqi3))
+  
+  cat(paste("Maximal Frequent Itemset:Support: 0.1"))
+  car1<-length(maximal.freq.itemset(Car.fqi1))
+  cat(paste("Maximal Frequent Itemset:Support: 0.2"))
+  car2<-length(maximal.freq.itemset(Car.fqi2))
+  
+  cat(paste("Maximal Frequent Itemset:Support: 0.1"))
+  tictac1<-length(maximal.freq.itemset(Tictac.fqi1))
+  cat(paste("Maximal Frequent Itemset:Support: 0.2"))
+  tictac2<-length(maximal.freq.itemset(Tictac.fqi2))
+  cat(paste("Maximal Frequent Itemset:Support: 0.5"))
+  tictac3<-length(maximal.freq.itemset(Tictac.fqi3))
+  
+  
+  cat(paste("Closed Frequent Itemset:Support: 0.1"))
+  toy1.c<-length(closed.frequent.itemset(data.mb,0.1))
+  cat(paste("Closed Frequent Itemset:Support: 0.2"))
+  toy2.c<-length(closed.frequent.itemset(data.mb,0.2))
+  cat(paste("Closed Frequent Itemset:Support: 0.5"))
+  toy3.c<-length(closed.frequent.itemset(data.mb,0.5))
+  
+  cat(paste("Closed Frequent Itemset:Support: 0.1"))
+  closed.frequent.itemset(nursery.b,0.1)
+  cat(paste("Closed Frequent Itemset:Support: 0.2"))
+  closed.frequent.itemset(nursery.b,0.2)
+  cat(paste("Closed Frequent Itemset:Support: 0.5"))
+  closed.frequent.itemset(nursery.b,0.5)
+  
+  cat(paste("Closed Frequent Itemset:Support: 0.1"))
+  car1.c<-length(closed.frequent.itemset(car.b,0.1))
+  cat(paste("Closed Frequent Itemset:Support: 0.2"))
+  car2.c<-length(closed.frequent.itemset(car.b,0.2))
+  cat(paste("Closed Frequent Itemset:Support: 0.5"))
+  car3.c<-length(closed.frequent.itemset(car.b,0.5))
+  
+  cat(paste("Closed Frequent Itemset:Support: 0.1"))
+  nursery1.c<-length(closed.frequent.itemset(nursery.b,0.1))
+  cat(paste("Closed Frequent Itemset:Support: 0.2"))
+  nursery2.c<-length(closed.frequent.itemset(nursery.b,0.2))
+  cat(paste("Closed Frequent Itemset:Support: 0.5"))
+  nursery3.c<-length(closed.frequent.itemset(nursery.b,0.5))
+  
+  
+  cat(paste("Maximal Frequent Itemset:Support: 0.1"))
+  tictac1.c<-length(closed.frequent.itemset(tictac.b,0.1))
+  cat(paste("Maximal Frequent Itemset:Support: 0.2"))
+  tictac2.c<-length(closed.frequent.itemset(tictac.b,0.2))
+  cat(paste("Maximal Frequent Itemset:Support: 0.5"))
+  tictac3.c<-tictac1.c<-length(closed.frequent.itemset(tictac.b,0.5))
+  
+  toy1m<- cbind("Toy",toy1,toy1.c)
+  toy2m<- cbind("Toy",toy2,toy2.c)
+  toy3m<- cbind("Toy",toy3,toy3.c)
+  
+  nursery1m<- cbind("Nursery",nursery1,nursery1.c)
+  nursery2m<- cbind("Nursery",nursery2,nursery2.c)
+  nursery3m<- cbind("Nursery",nursery3,nursery3.c)
+  
+  car1m<- cbind(car1,car1.c)
+  car2m<- cbind(car2,car2.c)
+  car3m<- cbind(0,car3.c)
+  
+  tictac1m<- cbind("TictacToe",tictac1,tictac1.c)
+  tictac2m<- cbind("TictacToe",tictac2,tictac2.c)
+  tictac3m<- cbind("TictacToe",tictac3,tictac3.c)
+  
+  close.freq.table<<-as.data.frame(rbind(toy1m,toy2m,toy3m,nursery1m,nursery2m,nursery3m,car1m,car2m,tictac1m,tictac2m,tictac3m))
+  return(t)
+}
+
+```
+Rule Generation and pruning using Confidence and Lift
+```{r}
+rule.gen<- function(dataset,frequent.itemsets, threshold,prune_by){
+  items<- frequent.itemsets$items
+  prune_subsets<-c()
+  countRules<<- 0
+  bruteForce<<-0
+  rules.lift.table<<-data.frame(Rules=as.character(character()),
+                 Lift=numeric(0), 
+                 stringsAsFactors=FALSE)
+  rules.conf.table<<-data.frame(Rules=as.character(character()),
+                 Confidence=numeric(0), 
+                 stringsAsFactors=FALSE) 
+  for(i in 1:length(items)){
+    split.item<- unlist(strsplit(as.character(items[i]),split = " "))
+    pwset<- findPowerset(split.item)
+    bruteForce<<- bruteForce + length(split.item)
+    for(j in 1:length(pwset)){
+      sub.pwset<- pwset[[j]]
+      if(length(sub.pwset)>0){
+        X = sub.pwset
+        Y = setdiff(split.item,X)
+        if(all(X %in% prune_subsets)){
+          break
+        }
+        if(length(X) != 0 && length(Y) !=0){
+          if(prune_by == "confidence"){
+            conf <- Confidence(dataset,X,Y,nrow(dataset))
+            if(conf< threshold){
+              prune_subsets_of<-unique(c(prune_subsets,X))
+              break
+            }
+            rules.conf.table<<-as.data.frame(rbind(rules.conf.table,cbind.data.frame(Rules =paste(paste(X, collapse = " "), "=>",paste(Y, collapse = " ")),conf)))
+            countRules <<- countRules + 1
+          }else if(prune_by == "lift"){
+            l <- lift(dataset,X,Y,nrow(dataset))
+            if(l< threshold){
+              prune_subsets_of<-unique(c(prune_subsets,X))
+              break
+            }
+            rules.lift.table<<-as.data.frame(rbind(rules.lift.table,cbind.data.frame(Rules =paste(paste(X, collapse = " "), "=>",paste(Y, collapse = " ")),l)))
+            countRules<<- countRules + 1
+          }
+          
+        }
+      }
+      
+    }
+  }
+}
+```
+Show Top Ten Rules using confidence
+```{r}
+topTenConf<-function(){
+  conf1<- 0.3
+  conf2<- 0.4
+  conf3<- 0.6
+  ############ Toy ###########
+  cat("Support: 0.1")
+  cat(paste("Top ten: Toy, Confidence = conf1","\n\n\n"))
+  rule.gen(data.mb,Toy.fqi1,conf1,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.1,0.3)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Toy, Confidence = conf2","\n\n\n"))
+  rule.gen(data.mb,Toy.fqi1,conf2,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.1,0.4)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Toy, Confidence = conf3"),"\n\n\n")
+  rule.gen(data.mb,Toy.fqi1,conf3,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.1,0.6)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat("Support: 0.2")
+  cat(paste("Top ten: Toy, Confidence = conf1","\n\n\n"))
+  rule.gen(data.mb,Toy.fqi2,conf1,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.2,0.3)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Toy, Confidence = conf2","\n\n\n"))
+  rule.gen(data.mb,Toy.fqi2,conf2,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.2,0.4)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Toy, Confidence = conf3"),"\n\n\n")
+  rule.gen(data.mb,Toy.fqi2,conf3,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.2,0.6)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat("Support: 0.5")
+  cat(paste("Top ten: Toy, Confidence = conf1","\n\n\n"))
+  rule.gen(data.mb,Toy.fqi3,conf1,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.5,0.3)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Toy, Confidence = conf2","\n\n\n"))
+  rule.gen(data.mb,Toy.fqi3,conf2,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.5,0.4)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Toy, Confidence = conf3"),"\n\n\n")
+  rule.gen(data.mb,Toy.fqi3,conf3,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.5,0.6)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  
+  ####### NUrsery ########
+  cat("Support: 0.1")
+  cat(paste("Top ten: Nursery, Confidence = conf1","\n\n\n"))
+  rule.gen(nursery.b,Nursery.fqi1,conf1,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.1,0.3)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Nursery, Confidence = conf2","\n\n\n"))
+  rule.gen(nursery.b,Nursery.fqi1,conf2,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.1,0.4)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Nursery, Confidence = conf3"),"\n\n\n")
+  rule.gen(nursery.b,Nursery.fqi1,conf3,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.1,0.6)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat("Support: 0.2")
+  cat(paste("Top ten: Nursery, Confidence = conf1","\n\n\n"))
+  rule.gen(nursery.b,Nursery.fqi2,conf1,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.2,0.3)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Nursery, Confidence = conf2","\n\n\n"))
+  rule.gen(nursery.b,Nursery.fqi2,conf2,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.2,0.4)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Nursery, Confidence = conf3"),"\n\n\n")
+  rule.gen(nursery.b,Nursery.fqi2,conf3,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.2,0.6)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat("Support: 0.5")
+  cat(paste("Top ten: Nursery, Confidence = conf1","\n\n\n"))
+  rule.gen(nursery.b,Nursery.fqi3,conf1,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.5,0.3)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Nursery, Confidence = conf2","\n\n\n"))
+  rule.gen(nursery.b,Nursery.fqi3,conf2,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.5,0.4)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Nursery, Confidence = conf3"),"\n\n\n")
+  rule.gen(nursery.b,Nursery.fqi3,conf3,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.5,0.6)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  ######### Car #########
+  
+  cat("Support: 0.1")
+  cat(paste("Top ten: Nursery, Confidence = conf1","\n\n\n"))
+  rule.gen(car.b,Car.fqi1,conf1,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.1,0.3)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Car, Confidence = conf2","\n\n\n"))
+  rule.gen(car.b,Car.fqi1,conf2,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.1,0.4)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Car, Confidence = conf3"),"\n\n\n")
+  rule.gen(car.b,Car.fqi1,conf3,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.1,0.6)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat("Support: 0.2")
+  cat(paste("Top ten: Car, Confidence = conf1","\n\n\n"))
+  rule.gen(car.b,Car.fqi2,conf1,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.2,0.3)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Car, Confidence = conf2","\n\n\n"))
+  rule.gen(car.b,Car.fqi2,conf2,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.2,0.4)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Car, Confidence = conf3"),"\n\n\n")
+  rule.gen(car.b,Car.fqi2,conf3,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.2,0.6)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  ######## Tic-Tac-Toe ###########
+  
+  cat("Support: 0.1")
+  cat(paste("Top ten: Nursery, Confidence = conf1","\n\n\n"))
+  rule.gen(tictac.b,Tictac.fqi1,conf1,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.1,0.3)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Tic Tac Toe, Confidence = conf2","\n\n\n"))
+  rule.gen(tictac.b,Tictac.fqi1,conf2,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.1,0.4)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Tic Tac Toe, Confidence = conf3"),"\n\n\n")
+  rule.gen(tictac.b,Tictac.fqi1,conf3,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.1,0.6)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat("Support: 0.2")
+  cat(paste("Top ten: Tic Tac Toe, Confidence = conf1","\n\n\n"))
+  rule.gen(tictac.b,Tictac.fqi2,conf1,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.2,0.3)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Tic Tac Toe, Confidence = conf2","\n\n\n"))
+  rule.gen(tictac.b,Tictac.fqi2,conf2,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.2,0.4)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Tic Tac Toe, Confidence = conf3"),"\n\n\n")
+  rule.gen(tictac.b,Tictac.fqi2,conf3,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.2,0.6)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat("Support: 0.5")
+  cat(paste("Top ten: Tic Tac Toe, Confidence = conf1","\n\n\n"))
+  rule.gen(tictac.b,Tictac.fqi3,conf1,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.5,0.3)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Tic Tac Toe, Confidence = conf2","\n\n\n"))
+  rule.gen(tictac.b,Tictac.fqi3,conf2,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.5,0.4)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  cat(paste("\nTop ten: Tic Tac Toe, Confidence = conf3"),"\n\n\n")
+  rule.gen(tictac.b,Tictac.fqi3,conf3,"confidence")
+  conf.brute.tables<<- as.data.frame(rbind(conf.brute.tables, cbind(paste("2^",bruteForce-1),countRules,0.5,0.6)))
+  print(arrange(rules.conf.table, desc(conf))[1:10,])
+  
+  
+}
+
+topTenConf()
+```
+Show top 10 Rules using lift
+```{r}
+
+topTenLift<-function(){
+  
+  
+  ############ Toy ###########
+  cat("Support: 0.1")
+  cat(paste("Top ten: Toy, lift = 0.5","\n\n\n"))
+  rule.gen(data.mb,Toy.fqi1,0.5,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Toy, lift = 0.7","\n\n\n"))
+  rule.gen(data.mb,Toy.fqi1,0.7,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Toy, lift = 0.9"),"\n\n\n")
+  rule.gen(data.mb,Toy.fqi1,0.9,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat("Support: 0.2")
+  cat(paste("Top ten: Toy, lift = 0.5","\n\n\n"))
+  rule.gen(data.mb,Toy.fqi2,0.5,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Toy, lift = 0.7","\n\n\n"))
+  rule.gen(data.mb,Toy.fqi2,0.7,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Toy, lift = 0.9"),"\n\n\n")
+  rule.gen(data.mb,Toy.fqi2,0.9,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat("Support: 0.5")
+  cat(paste("Top ten: Toy, lift = 0.5","\n\n\n"))
+  rule.gen(data.mb,Toy.fqi3,0.5,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Toy, lift = 0.7","\n\n\n"))
+  rule.gen(data.mb,Toy.fqi3,0.7,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Toy, lift = 0.9"),"\n\n\n")
+  rule.gen(data.mb,Toy.fqi3,0.9,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  
+  
+  ####### NUrsery ########
+  cat("Support: 0.1")
+  cat(paste("Top ten: Nursery, lift = 0.5","\n\n\n"))
+  rule.gen(nursery.b,Nursery.fqi1,0.5,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Nursery, lift = 0.7","\n\n\n"))
+  rule.gen(nursery.b,Nursery.fqi1,0.7,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Nursery, lift = 0.9"),"\n\n\n")
+  rule.gen(nursery.b,Nursery.fqi1,0.9,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat("Support: 0.2")
+  cat(paste("Top ten: Nursery, lift = 0.5","\n\n\n"))
+  rule.gen(nursery.b,Nursery.fqi2,0.5,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Nursery, lift = 0.7","\n\n\n"))
+  rule.gen(nursery.b,Nursery.fqi2,0.7,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Nursery, lift = 0.9"),"\n\n\n")
+  rule.gen(nursery.b,Nursery.fqi2,0.9,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat("Support: 0.5")
+  cat(paste("Top ten: Nursery, lift = 0.5","\n\n\n"))
+  rule.gen(nursery.b,Nursery.fqi3,0.5,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Nursery, lift = 0.7","\n\n\n"))
+  rule.gen(nursery.b,Nursery.fqi3,0.7,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Nursery, lift = 0.9"),"\n\n\n")
+  rule.gen(nursery.b,Nursery.fqi3,0.9,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  ######### Car #########
+  
+  cat("Support: 0.1")
+  cat(paste("Top ten: Nursery, lift = 0.5","\n\n\n"))
+  rule.gen(car.b,Car.fqi1,0.5,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Car, lift = 0.7","\n\n\n"))
+  rule.gen(car.b,Car.fqi1,0.7,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Car, lift = 0.9"),"\n\n\n")
+  rule.gen(car.b,Car.fqi1,0.9,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat("Support: 0.2")
+  cat(paste("Top ten: Car, lift = 0.5","\n\n\n"))
+  rule.gen(car.b,Car.fqi2,0.5,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Car, lift = 0.7","\n\n\n"))
+  rule.gen(car.b,Car.fqi2,0.7,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Car, lift = 0.9"),"\n\n\n")
+  rule.gen(car.b,Car.fqi2,0.9,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  ######## Tic-Tac-Toe ###########
+  
+  cat("Support: 0.1")
+  cat(paste("Top ten: Nursery, lift = 0.5","\n\n\n"))
+  rule.gen(tictac.b,Tictac.fqi1,0.5,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Tic Tac Toe, lift = 0.7","\n\n\n"))
+  rule.gen(tictac.b,Tictac.fqi1,0.7,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Tic Tac Toe, lift = 0.9"),"\n\n\n")
+  rule.gen(tictac.b,Tictac.fqi1,0.9,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat("Support: 0.2")
+  cat(paste("Top ten: Tic Tac Toe, lift = 0.5","\n\n\n"))
+  rule.gen(tictac.b,Tictac.fqi2,0.5,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Tic Tac Toe, lift = 0.7","\n\n\n"))
+  rule.gen(tictac.b,Tictac.fqi2,0.7,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Tic Tac Toe, lift = 0.9"),"\n\n\n")
+  rule.gen(tictac.b,Tictac.fqi2,0.9,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat("Support: 0.5")
+  cat(paste("Top ten: Tic Tac Toe, lift = 0.5","\n\n\n"))
+  rule.gen(tictac.b,Tictac.fqi3,0.5,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Tic Tac Toe, lift = 0.7","\n\n\n"))
+  rule.gen(tictac.b,Tictac.fqi3,0.7,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  cat(paste("\nTop ten: Tic Tac Toe, lift = 0.9"),"\n\n\n")
+  rule.gen(tictac.b,Tictac.fqi3,0.9,"lift")
+  print(arrange(rules.lift.table, desc(l))[1:10,])
+  
+  
+}
+
+topTenLift()
+```
+
+
+
