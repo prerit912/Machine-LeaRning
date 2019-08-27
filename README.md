@@ -38,4 +38,4 @@
 
 "LOSER"
 
-"(whispers) Moron, doesn't know how to code."
+"(whispers) Moron, tune the parameter dumass."
